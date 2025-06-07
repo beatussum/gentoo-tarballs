@@ -90,14 +90,19 @@ build_tarball()
 					https://gitweb.gentoo.org/repo/gentoo.git/plain/metadata/license-mapping.conf \
 					|| die
 			fi
+
+			pushd "${WORKDIR}" &>> /dev/null || die
 		
-			pycargoebuild -cM --no-config \
-				-d "${FLAGS[destdir]}" \
+			pycargoebuild -cfM \
+				-d "${WORKDIR}/downloaded/crates" \
 				-l "${license_mapping}" \
 				"${input_directory}" \
 				|| die
 
-			rm "${FLAGS[destdir]}"/*.crate || die
+			popd &>> /dev/null || die
+
+			mv "${WORKDIR}/downloaded/crates"/*-crates.tar.xz "${FLAGS[destdir]}" \
+				|| die
 
 			;;
 
