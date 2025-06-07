@@ -12,6 +12,18 @@ permissions:
   contents: write
 
 jobs:
+  reset:
+    name: Reset tarballs
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ github.token  }}
+
+    steps:
+      - name: Delete existing tag and release
+        run: gh release delete latest --cleanup-tag --yes --repo $GITHUB_REPOSITORY
+        continue-on-error: true
+  
   build:
     name: Build tarballs
     runs-on: ubuntu-latest
@@ -29,18 +41,37 @@ jobs:
         uses: actions/setup-go@v5.5.0
 
       - name: Install pycargoebuild
-        run: pip install pycargoebuild
+        run: sudo pip install pycargoebuild
 
       - name: Build Rust tarballs
-        run: ./build -o distdir -t rust < packages/rust.conf
+        run: ./build -d destdir -t rust - < packages/rust.conf
 
       - name: Build Go tarballs
-        run: ./build -o distdir -t go < packages/go.conf
+        run: ./build -d destdir -t go - < packages/go.conf
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: tarballs
+          path: destdir
+
+  release:
+    name: Release tarballs
+    needs: [build, reset]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download tarballs
+        uses: actions/download-artifact@v4.3.0
+        with:
+          name: tarballs
+          path: destdir
+      
       - name: Create release
         uses: softprops/action-gh-release@v2.2.2
         with:
-          fail_on_unmatched_files: false
-          files: distdir/*
+          draft: false
+          files: destdir/*
           make_latest: true
-          name: latest
+          prerelease: false
+          tag_name: latest

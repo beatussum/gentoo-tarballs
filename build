@@ -82,9 +82,20 @@ build_tarball()
 			;;
 
 		rust)
-			pushd "${input_directory}" &>> /dev/null || die
-			pycargoebuild -c -d "${FLAGS[destdir]}" || die
-			popd &>> /dev/null || die
+			local license_mapping="${WORKDIR}/license-mapping.conf"
+			
+			if [[ ! -f "${license_mapping}" ]]; then
+				wget \
+					-O "${license_mapping}" \
+					https://gitweb.gentoo.org/repo/gentoo.git/plain/metadata/license-mapping.conf \
+					|| die
+			fi
+		
+			pycargoebuild -cM --no-config \
+				-d "${FLAGS[destdir]}" \
+				-l "${license_mapping}" \
+				"${input_directory}" \
+				|| die
 
 			rm "${FLAGS[destdir]}"/*.crate || die
 
