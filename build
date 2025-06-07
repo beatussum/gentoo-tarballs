@@ -85,6 +85,9 @@ build_tarball()
 			pushd "${input_directory}" &>> /dev/null || die
 			pycargoebuild -c -d "${FLAGS[destdir]}" || die
 			popd &>> /dev/null || die
+
+			rm "${FLAGS[destdir]}"/*.crate || die
+
 			;;
 
 		*)
