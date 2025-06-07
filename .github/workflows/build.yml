@@ -1,0 +1,46 @@
+name: Build tarballs
+
+on:
+  push:
+    paths: packages/*
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build tarballs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Setup Python environment
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ">=3.10"
+
+      - name: Setup Go environment
+        uses: actions/setup-go@v5.5.0
+
+      - name: Install pycargoebuild
+        run: pip install pycargoebuild
+
+      - name: Build Rust tarballs
+        run: ./build -o distdir -t rust < packages/rust.conf
+
+      - name: Build Go tarballs
+        run: ./build -o distdir -t go < packages/go.conf
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          fail_on_unmatched_files: false
+          files: distdir/*
+          make_latest: true
+          name: latest

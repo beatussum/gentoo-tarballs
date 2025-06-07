@@ -1,0 +1,230 @@
+#! /usr/bin/env bash
+
+# Copyright (C) 2025 Mattéo Rossillol‑‑Laruelle <beatussum@protonmail.com>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+
+
+set -o pipefail
+
+readonly NAME="${BASH_SOURCE[0]##*/}"
+
+declare -A FLAGS=(
+	[destdir]="${PWD}/destdir"
+	[type]="none"
+)
+
+########
+# CORE #
+########
+
+die()
+{
+	local msg="$*"
+
+	[[ -n "${msg}" ]] || msg="(no message)"
+	printf "fatal error: %s\n" "${msg}"
+	echo
+	echo "with stacktrace:"
+	stacktrace
+
+	exit 1
+}
+
+stacktrace()
+{
+	for ((i=0;; ++i)); do
+		local file="${BASH_SOURCE[i + 1]}"
+		local func="${FUNCNAME[i]}"
+		local line="${BASH_LINENO[i]}"
+
+		[[ -f "${file}" ]] || break
+		printf "    at %s (%s:%s)\n" "${func}" "$(realpath "${file}")" "${line}"
+	done
+}
+
+###########
+# HELPERS #
+###########
+
+build_tarball()
+{
+	local input_directory="$1"
+
+	case "${FLAGS[type]}" in
+		go)
+			local vendor="${WORKDIR}/temp/vendor"
+
+			pushd "${input_directory}" &>> /dev/null || die
+
+			local name
+			name="$(go_current_module_name)" || die
+			
+			go mod vendor -o "${vendor}" || die
+
+			popd &>> /dev/null || die
+
+			pushd "${vendor}/.." &>> /dev/null || die
+			tar -ac -f "${FLAGS[destdir]}/${name}.tar.xz" "vendor" || die
+			popd &>> /dev/null || die
+
+			;;
+
+		rust)
+			pushd "${input_directory}" &>> /dev/null || die
+			pycargoebuild -c -d "${FLAGS[destdir]}" || die
+			popd &>> /dev/null || die
+			;;
+
+		*)
+			die "\`${FLAGS[type]}\` is not a supported type"
+			;;
+	esac
+}
+
+fetch()
+{
+	local url="$1"
+
+	local filepath="${WORKDIR}/downloaded/${url##*/}"
+
+	wget -P "${WORKDIR}/downloaded" "${url}" || die
+	tar -xz -f "${filepath}" -C "${WORKDIR}/unpacked" || die
+
+	tar -tz -f "${filepath}" | head -1 || true
+}
+
+go_current_module_name()
+{
+	local name
+	name="$(go list)" || die
+	echo "${name##*/}"
+}
+
+# workdir management #
+
+setup_workdir()
+{
+	[[ -v WORKDIR  ]] && die
+	WORKDIR="$(mktemp -d)" || die
+	mkdir "${WORKDIR}"/{downloaded,temp,unpacked} || die
+}
+
+cleanup_workdir()
+{
+	[[ -v WORKDIR  ]] || die
+	rm -r "${WORKDIR}" || die
+	unset WORKDIR
+}
+
+###########
+# ACTIONS #
+###########
+
+build()
+{
+	local urls=( "$@" )
+
+	for url in "${urls[@]}"; do
+		local unpacked
+		unpacked="${WORKDIR}/unpacked/$(fetch "${url}")" || die
+		build_tarball "${unpacked}"
+	done
+}
+
+usage()
+{
+	cat << EOF
+usage:
+  ${NAME} [-d <destination directory>] -t <type> [-] [--] [urls...]
+
+To avoid overcrowding Manifest files and ebuilds, some Rust packages and all Go
+packages must provide their dependencies in an external tarball. This little
+script automates the process of building these tarballs.
+
+options:
+  -d, --destdir <destdir>  Set the destination directory
+  -t, --type <type>        Set the type of the underlying projects
+  -h, --help               Print this message
+
+${NAME} Copyright (C) 2025 Mattéo Rossillol‑‑Laruelle <beatussum@protonmail.com>
+This program comes with ABSOLUTELY NO WARRANTY; for details type \`show w'.
+This is free software, and you are welcome to redistribute it
+under certain conditions; type \`show c' for details.
+EOF
+}
+
+########
+# MAIN #
+########
+
+main()
+{
+	local -a urls
+
+	while [[ "$#" -ne 0 ]]; do
+		case "$1" in
+			-d|--destdir)
+				FLAGS[destdir]="$2"
+				shift
+
+				;;
+			
+			-t|--type)
+				FLAGS[type]="$2"
+				shift
+
+				;;
+
+			-h|--help)
+				usage
+				exit 0
+
+				;;
+
+			-)
+				mapfile -t to_append
+				urls+=( "${to_append[@]}" )
+
+				;;
+
+			-*)
+				usage
+				die "\`$1\` is not recognized"
+
+				;;
+
+			--)
+				urls+=( "$@" )
+				break
+
+				;;
+
+			*)
+				urls+=( "$1" )
+				;;
+		esac
+
+		shift
+	done
+
+	[[ "${FLAGS[type]}" = none ]] && die '`--type` must be specified'
+
+	setup_workdir
+	mkdir -p "${FLAGS[destdir]}" || die
+	build "${urls[@]}"
+	cleanup_workdir
+}
+
+main "$@"
