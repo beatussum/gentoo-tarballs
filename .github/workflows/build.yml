@@ -12,18 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  reset:
-    name: Reset tarballs
-    runs-on: ubuntu-latest
-
-    env:
-      GH_TOKEN: ${{ github.token  }}
-
-    steps:
-      - name: Delete existing tag and release
-        run: gh release delete latest --cleanup-tag --yes --repo $GITHUB_REPOSITORY
-        continue-on-error: true
-  
   build:
     name: Build tarballs
     runs-on: ubuntu-latest
@@ -54,6 +42,19 @@ jobs:
         with:
           name: tarballs
           path: destdir
+
+  reset:
+    name: Reset tarballs
+    needs: build
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ github.token  }}
+
+    steps:
+      - name: Delete existing tag and release
+        run: gh release delete latest --cleanup-tag --yes --repo $GITHUB_REPOSITORY
+        continue-on-error: true
 
   release:
     name: Release tarballs
