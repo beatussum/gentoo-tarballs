@@ -2,7 +2,9 @@ name: Build tarballs
 
 on:
   push:
-    paths: packages/*
+    paths:
+      - packages/*
+      - patches/*
 
 concurrency:
   cancel-in-progress: true
@@ -36,6 +38,9 @@ jobs:
 
       - name: Build Go tarballs
         run: ./build -d destdir -t go - < packages/go.conf
+
+      - name: Prepare patches
+        run: cp patches/* destdir
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4.6.2
