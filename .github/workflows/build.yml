@@ -1,10 +1,12 @@
 name: Build tarballs
 
 on:
-  push:
+  - push:
     paths:
       - packages/*
       - patches/**
+
+  - workflow_dispatch
 
 concurrency:
   cancel-in-progress: true
