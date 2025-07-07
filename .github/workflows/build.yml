@@ -40,7 +40,7 @@ jobs:
         run: ./build -d destdir -t go - < packages/go.conf
 
       - name: Prepare patches
-        run: cp patches/* destdir
+        run: cp patches/*.patch destdir
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4.6.2

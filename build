@@ -22,6 +22,7 @@ readonly NAME="${BASH_SOURCE[0]##*/}"
 
 declare -A FLAGS=(
 	[destdir]="${PWD}/destdir"
+	[patches]="${PWD}/patches"
 	[type]="none"
 )
 
@@ -70,7 +71,7 @@ build_tarball()
 
 			local name
 			name="$(go_current_module_name)" || die
-			
+
 			go mod vendor -o "${vendor}" || die
 
 			popd &>> /dev/null || die
@@ -83,7 +84,7 @@ build_tarball()
 
 		rust)
 			local license_mapping="${WORKDIR}/license-mapping.conf"
-			
+
 			if [[ ! -f "${license_mapping}" ]]; then
 				wget \
 					-O "${license_mapping}" \
@@ -92,7 +93,7 @@ build_tarball()
 			fi
 
 			pushd "${WORKDIR}" &>> /dev/null || die
-		
+
 			pycargoebuild -cfM \
 				-d "${WORKDIR}/downloaded/crates" \
 				-l "${license_mapping}" \
@@ -116,12 +117,44 @@ fetch()
 {
 	local url="$1"
 
-	local filepath="${WORKDIR}/downloaded/${url##*/}"
-
 	wget -P "${WORKDIR}/downloaded" "${url}" || die
-	tar -xz -f "${filepath}" -C "${WORKDIR}/unpacked" || die
+	tar -xz -f "$(downloaded_filepath "${url}")" -C "${WORKDIR}/unpacked" || die
+}
 
+patch() {
+	local filepath="$1"
+
+	for p in "$(patch_filepath "${filepath}")"/*.patch; do
+		pushd "${WORKDIR}/unpacked/${filepath}" &>> /dev/null || die
+		command patch -p1 < "${p}" || die
+		popd &>> /dev/null || die
+	done
+}
+
+# getters #
+
+downloaded_filepath()
+{
+	local url="$1"
+	echo "${WORKDIR}/downloaded/${url##*/}"
+}
+
+patch_filepath()
+{
+	local filepath="$1"
+	echo "${FLAGS[patches]}/${filepath}"
+}
+
+unpacked_filepath()
+{
+	local filepath="$1"
 	tar -tz -f "${filepath}" | head -1 || true
+}
+
+unpacked_filepath_from_url()
+{
+	local url="$1"
+	unpacked_filepath "$(downloaded_filepath "${url}")"
 }
 
 go_current_module_name()
@@ -157,7 +190,13 @@ build()
 
 	for url in "${urls[@]}"; do
 		local unpacked
-		unpacked="${WORKDIR}/unpacked/$(fetch "${url}")" || die
+
+		fetch "${url}"
+
+		unpacked="$(unpacked_filepath_from_url "${url}")"
+		patch "${unpacked}"
+
+		unpacked="${WORKDIR}/unpacked/${unpacked}"
 		build_tarball "${unpacked}"
 	done
 }
@@ -174,6 +213,7 @@ script automates the process of building these tarballs.
 
 options:
   -d, --destdir <destdir>  Set the destination directory
+  -p, --patches <dir>      Set the directory for patches
   -t, --type <type>        Set the type of the underlying projects
   -h, --help               Print this message
 
@@ -199,7 +239,13 @@ main()
 				shift
 
 				;;
-			
+
+			-p|--patches)
+				FLAGS[patches]="$2"
+				shift
+
+				;;
+
 			-t|--type)
 				FLAGS[type]="$2"
 				shift
