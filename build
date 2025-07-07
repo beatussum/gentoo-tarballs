@@ -124,6 +124,8 @@ fetch()
 patch() {
 	local filepath="$1"
 
+	[[ -d "$(patch_filepath "${filepath}")" ]] || return
+
 	for p in "$(patch_filepath "${filepath}")"/*.patch; do
 		pushd "${WORKDIR}/unpacked/${filepath}" &>> /dev/null || die
 		command patch -p1 < "${p}" || die
