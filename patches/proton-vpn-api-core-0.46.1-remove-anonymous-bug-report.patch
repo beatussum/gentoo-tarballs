@@ -1,0 +1,746 @@
+From 440746e5e03a990d4eff6996b5b8dcc6cc0d9ea9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Matt=C3=A9o=20Rossillol=E2=80=91=E2=80=91Laruelle?=
+ <beatussum@protonmail.com>
+Date: Sat, 4 Oct 2025 16:47:16 +0200
+Subject: [PATCH] remove anonymous usage reporting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This feature depends on dev-python/sentry-sdk, a package that was removed from
+the main tree due to its difficulty in being packaged correctly.
+
+Signed-off-by: Mattéo Rossillol‑‑Laruelle <beatussum@protonmail.com>
+---
+ proton/vpn/core/api.py               |  11 --
+ proton/vpn/core/connection.py        |   7 -
+ proton/vpn/core/settings/settings.py |   8 -
+ proton/vpn/core/usage.py             | 230 ---------------------------
+ setup.py                             |   2 +-
+ tests/core/test_connection.py        |  65 --------
+ tests/core/test_settings.py          |   1 -
+ tests/core/test_usage.py             | 171 --------------------
+ 8 files changed, 1 insertion(+), 494 deletions(-)
+ delete mode 100644 proton/vpn/core/usage.py
+ delete mode 100644 tests/core/test_usage.py
+
+diff --git a/proton/vpn/core/api.py b/proton/vpn/core/api.py
+index a3da435..8b165f9 100644
+--- a/proton/vpn/core/api.py
++++ b/proton/vpn/core/api.py
+@@ -31,7 +31,6 @@ from proton.vpn.core.session_holder import SessionHolder, ClientTypeMetadata
+ from proton.vpn.session.dataclasses import LoginResult, BugReportForm
+ from proton.vpn.session.account import VPNAccount
+ from proton.vpn.session import FeatureFlags
+-from proton.vpn.core.usage import UsageReporting
+ 
+ from proton.session.api import Fido2Assertion
+ 
+@@ -46,8 +45,6 @@ class ProtonVPNAPI:  # pylint: disable=too-many-public-methods
+         )
+         self._settings_persistence = SettingsPersistence()
+         self._vpn_connector = None
+-        self._usage_reporting = UsageReporting(
+-            client_type_metadata=client_type_metadata)
+         self.refresher = VPNDataRefresher(
+             self._session_holder, Scheduler()
+         )
+@@ -65,7 +62,6 @@ class ProtonVPNAPI:  # pylint: disable=too-many-public-methods
+         self._vpn_connector = await VPNConnector.get(
+             session_holder=self._session_holder,
+             settings_persistence=self._settings_persistence,
+-            usage_reporting=self._usage_reporting,
+         )
+         self._vpn_connector.subscribe_to_certificate_updates(self.refresher)
+ 
+@@ -86,7 +82,6 @@ class ProtonVPNAPI:  # pylint: disable=too-many-public-methods
+             user_tier,
+             self.feature_flags
+         )
+-        self._usage_reporting.enabled = settings.anonymous_crash_reports
+ 
+         # We have to return a copy of the settings to force the caller to
+         # use the `save_settings` method to apply the changes.
+@@ -102,7 +97,6 @@ class ProtonVPNAPI:  # pylint: disable=too-many-public-methods
+         loop = asyncio.get_running_loop()
+         await loop.run_in_executor(None, self._settings_persistence.save, settings)
+         await self._vpn_connector.apply_settings(settings)
+-        self._usage_reporting.enabled = settings.anonymous_crash_reports
+ 
+     async def login(self, username: str, password: str) -> LoginResult:
+         """
+@@ -234,11 +228,6 @@ class ProtonVPNAPI:  # pylint: disable=too-many-public-methods
+         vpn_connector = await self.get_vpn_connector()
+         await vpn_connector.disconnect()
+ 
+-    @property
+-    def usage_reporting(self) -> UsageReporting:
+-        """Returns the usage reporting instance to send anonymous crash reports."""
+-        return self._usage_reporting
+-
+     @property
+     def split_tunneling_available(self) -> bool:
+         """Deprecated, use VPNConnector.is_split_tunneling_available."""
+diff --git a/proton/vpn/core/connection.py b/proton/vpn/core/connection.py
+index 0e217a4..176d626 100644
+--- a/proton/vpn/core/connection.py
++++ b/proton/vpn/core/connection.py
+@@ -48,7 +48,6 @@ from proton.vpn.connection.states import StateContext
+ from proton.vpn.session.client_config import ClientConfig
+ from proton.vpn.session.dataclasses import VPNLocation
+ from proton.vpn.session.servers import LogicalServer, ServerFeatureEnum
+-from proton.vpn.core.usage import UsageReporting
+ from proton.vpn.connection.exceptions import FeatureSyntaxError, FeatureError
+ from proton.vpn.split_tunneling.interface import SplitTunneling
+ from proton.vpn.core.cache_handlers import PortForwardFileHandler
+@@ -83,7 +82,6 @@ class VPNConnector:  # pylint: disable=too-many-instance-attributes
+         cls,
+         session_holder: SessionHolder,
+         settings_persistence: SettingsPersistence,
+-        usage_reporting: UsageReporting,
+         kill_switch: KillSwitch = None,
+     ):
+         """
+@@ -94,7 +92,6 @@ class VPNConnector:  # pylint: disable=too-many-instance-attributes
+             session_holder,
+             settings_persistence,
+             kill_switch=kill_switch,
+-            usage_reporting=usage_reporting,
+             split_tunneling=split_tunneling
+         )
+         await connector.initialize_state()
+@@ -104,7 +101,6 @@ class VPNConnector:  # pylint: disable=too-many-instance-attributes
+             self,
+             session_holder: SessionHolder,
+             settings_persistence: SettingsPersistence,
+-            usage_reporting: UsageReporting,
+             connection_persistence: Optional[ConnectionPersistence] = None,
+             state: Optional[states.State] = None,
+             kill_switch: Optional[KillSwitch] = None,
+@@ -121,7 +117,6 @@ class VPNConnector:  # pylint: disable=too-many-instance-attributes
+         self._publisher = publisher or Publisher()
+         self._lock = asyncio.Lock()
+         self._background_tasks = set()
+-        self._usage_reporting = usage_reporting
+         self._port_forward_file_handler = port_forward_file_handler or PortForwardFileHandler()
+ 
+         self._publisher.register(self._on_state_change_update_location)
+@@ -468,12 +463,10 @@ class VPNConnector:  # pylint: disable=too-many-instance-attributes
+         try:
+             new_state = self.current_state.on_event(event)
+         except FeatureSyntaxError as excp:
+-            self._usage_reporting.report_error(excp)
+             logger.exception(msg=excp.message)
+         except FeatureError as excp:
+             logger.warning(msg=excp.message)
+         except Exception as excp:
+-            self._usage_reporting.report_error(excp)
+             raise excp
+         else:
+             return await self._update_state(new_state)
+diff --git a/proton/vpn/core/settings/settings.py b/proton/vpn/core/settings/settings.py
+index 8c8bbe4..2686305 100644
+--- a/proton/vpn/core/settings/settings.py
++++ b/proton/vpn/core/settings/settings.py
+@@ -45,7 +45,6 @@ SETTINGS = os.path.join(
+ 
+ DEFAULT_PROTOCOL = "openvpn-udp"
+ DEFAULT_KILLSWITCH = KillSwitchState.OFF.value
+-DEFAULT_ANONYMOUS_CRASH_REPORTS = True
+ 
+ 
+ @dataclass
+@@ -55,7 +54,6 @@ class Settings:
+     killswitch: int
+     custom_dns: CustomDNS
+     ipv6: bool
+-    anonymous_crash_reports: bool
+     features: Features
+ 
+     @staticmethod
+@@ -75,10 +73,6 @@ class Settings:
+             killswitch=data.get("killswitch", default.killswitch),
+             custom_dns=custom_dns,
+             ipv6=data.get("ipv6", default.ipv6),
+-            anonymous_crash_reports=data.get(
+-                "anonymous_crash_reports",
+-                default.anonymous_crash_reports
+-            ),
+             features=features
+         )
+ 
+@@ -89,7 +83,6 @@ class Settings:
+             "killswitch": self.killswitch,
+             "custom_dns": self.custom_dns.to_dict(),
+             "ipv6": self.ipv6,
+-            "anonymous_crash_reports": self.anonymous_crash_reports,
+             "features": self.features.to_dict(),
+         }
+ 
+@@ -101,7 +94,6 @@ class Settings:
+             killswitch=DEFAULT_KILLSWITCH,
+             custom_dns=CustomDNS.default(),
+             ipv6=True,
+-            anonymous_crash_reports=DEFAULT_ANONYMOUS_CRASH_REPORTS,
+             features=Features.default(user_tier),
+         )
+ 
+diff --git a/proton/vpn/core/usage.py b/proton/vpn/core/usage.py
+deleted file mode 100644
+index 30c357e..0000000
+--- a/proton/vpn/core/usage.py
++++ /dev/null
+@@ -1,230 +0,0 @@
+-"""
+-Copyright (c) 2023 Proton AG
+-
+-This file is part of Proton VPN.
+-
+-Proton VPN is free software: you can redistribute it and/or modify
+-it under the terms of the GNU General Public License as published by
+-the Free Software Foundation, either version 3 of the License, or
+-(at your option) any later version.
+-
+-Proton VPN is distributed in the hope that it will be useful,
+-but WITHOUT ANY WARRANTY; without even the implied warranty of
+-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-GNU General Public License for more details.
+-
+-You should have received a copy of the GNU General Public License
+-along with ProtonVPN.  If not, see <https://www.gnu.org/licenses/>.
+-"""
+-import logging
+-import os
+-import hashlib
+-import getpass
+-import re
+-
+-from proton.vpn.core.session_holder import (
+-    ClientTypeMetadata, DISTRIBUTION_VERSION, DISTRIBUTION_ID)
+-from proton.vpn.session.utils import get_desktop_environment
+-
+-DSN = "https://9a5ea555a4dc48dbbb4cfa72bdbd0899@vpn-api.proton.me/core/v4/reports/sentry/25"
+-SSL_CERT_FILE = "SSL_CERT_FILE"
+-MACHINE_ID = "/etc/machine-id"
+-PROTON_VPN = "protonvpn"
+-
+-# This is how we anonymise the data sent to us in sentry messages.
+-#
+-# The regular expressions will be matched against lower and upper case matches
+-# so the regular expression doesn't needs to include casing.
+-#
+-# {user} is a special key that will be replaced with the username of the
+-# current user. It makes for a more accurant regex match.
+-PRIVACY_REPLACEMENTS = [
+-    # Username in home directory
+-    (r'\/home\/{user}\/', r"/home/<HIDDEN>/"),
+-    # Email addresses
+-    (r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{{2,}}', r"<HIDDEN>"),
+-    # GPG ID addresses
+-    (r'gpg: encrypted with.*', r"<HIDDEN>"),
+-]
+-
+-log = logging.getLogger(__name__)
+-
+-
+-def scrub_private_data(data, keys):
+-    """
+-    Recursively scrub private data from any values in the event.
+-
+-    :param data: The value that needs to be scrubbed.
+-    :param keys: A dictionary of values to substitute before evaluating the
+-        regex replacement.
+-    :returns: The contents of data with any discovered personal information
+-        replaced by <HIDDEN>.
+-    """
+-    if isinstance(data, (tuple, list)):
+-        for index, value in enumerate(data):
+-            data[index] = scrub_private_data(value, keys)
+-    elif isinstance(data, dict):
+-        for key, value in data.items():
+-            data[key] = scrub_private_data(value, keys)
+-    elif isinstance(data, str):
+-        for expression, replacement in PRIVACY_REPLACEMENTS:
+-            pattern = expression.format(**keys)
+-            data = re.sub(pattern, replacement, data, flags=re.IGNORECASE)
+-    return data
+-
+-
+-class UsageReporting:
+-    """Sends anonymous usage reports to Proton."""
+-
+-    def __init__(self, client_type_metadata: ClientTypeMetadata):
+-        self._enabled = False
+-        self._capture_exception = None
+-        self._client_type_metadata = client_type_metadata
+-        self._user_id = None
+-        self._desktop_environment = get_desktop_environment()
+-
+-    @property
+-    def enabled(self):
+-        """Returns whether anonymous usage reporting is enabled."""
+-        return self._enabled
+-
+-    @enabled.setter
+-    def enabled(self, value: bool):
+-        """
+-        Sets whether usage reporting is enabled/disabled.
+-
+-        On unsupported platforms, this may fail, in which case UsageReporting
+-        will be disabled and an exception will be logged.
+-        """
+-
+-        try:
+-            self._enabled = value and self._start_sentry()
+-        except Exception:  # pylint: disable=broad-except
+-            self._enabled = False
+-            log.exception("Failed to enabled usage reporting")
+-
+-    def report_error(self, error):
+-        """
+-        Send an error to sentry if anonymous usage reporting is enabled.
+-
+-        On unsupported platforms, this may fail, in which case the error will
+-        will not be reported and an exception will be logged.
+-        """
+-
+-        try:
+-            if self._enabled:
+-                self._add_scope_metadata()
+-                self._capture_exception(error)
+-
+-        except Exception:  # pylint: disable=broad-except
+-            log.exception("Failed to report error '%s'", str(error))
+-
+-    @staticmethod
+-    def _get_user_id(machine_id_filepath=MACHINE_ID, user_name=None):
+-        """
+-        Returns a unique identifier for the user.
+-
+-        :param machine_id_filepath: The path to the machine id file,
+-            defaults to /etc/machine-id. This can be overrided for testing.
+-
+-        :param user_name: The username to include in the hash, if None is
+-            provided, the current user is obtained from the environment.
+-        """
+-
+-        if not os.path.exists(machine_id_filepath):
+-            return None
+-
+-        # We include the username in the hash to avoid collisions on machines
+-        # with multiple users.
+-        if not user_name:
+-            user_name = getpass.getuser()
+-
+-        # We use the machine id to uniquely identify the machine, we combine it
+-        # with the application name and the username. All three are hashed to
+-        # avoid leaking any personal information.
+-        with open(machine_id_filepath, "r", encoding="utf-8") as machine_id_file:
+-            machine_id = machine_id_file.read().strip()
+-
+-        combined = hashlib.sha256(machine_id.encode('utf-8'))
+-        combined.update(hashlib.sha256(PROTON_VPN.encode('utf-8')).digest())
+-        combined.update(hashlib.sha256(user_name.encode('utf-8')).digest())
+-
+-        return str(combined.hexdigest())
+-
+-    @staticmethod
+-    def _sanitize_event(event, _hint, user_name=getpass.getuser()):
+-        """
+-        Sanitize the event before sending it to sentry.
+-
+-        :param event: A dictionary representing the event to sanitize.
+-        :param _hint: Unused but required by the sentry SDK.
+-        :param user_name: The username to replace in the event, defaults to the
+-            current user, but can be set for testing purposes.
+-        """
+-
+-        return scrub_private_data(
+-            event,
+-            {
+-                "user": user_name
+-            }
+-        )
+-
+-    def _add_scope_metadata(self):
+-        """
+-        Unfortunately, we cannot set the user and tags on the isolation scope
+-        on startup because this is lost by the time we report an error.
+-        So we have to set the user and tags on the current scope just before
+-        reporting an error.
+-        """
+-        import sentry_sdk  # pylint: disable=import-outside-toplevel
+-
+-        # Using configure_scope to set a tag works with older versions of
+-        # sentry (0.12.2) and so works on ubuntu 20.
+-        with sentry_sdk.configure_scope() as scope:
+-            scope.set_tag("distro_name", DISTRIBUTION_ID)
+-            scope.set_tag("distro_version", DISTRIBUTION_VERSION)
+-            scope.set_tag("desktop_environment", self._desktop_environment)
+-            if self._user_id and hasattr(scope, "set_user"):
+-                scope.set_user({"id": self._user_id})
+-
+-    def _start_sentry(self):
+-        """Starts the sentry SDK with the appropriate configuration."""
+-
+-        if self._capture_exception:
+-            return True
+-
+-        if not self._client_type_metadata:
+-            raise ValueError("Client type metadata is not set, "
+-                             "UsageReporting.init() must be called first.")
+-
+-        import sentry_sdk  # pylint: disable=import-outside-toplevel
+-
+-        from sentry_sdk.integrations.dedupe import DedupeIntegration  # pylint: disable=import-outside-toplevel
+-        from sentry_sdk.integrations.stdlib import StdlibIntegration  # pylint: disable=import-outside-toplevel
+-        from sentry_sdk.integrations.modules import ModulesIntegration  # pylint: disable=import-outside-toplevel
+-
+-        # Read from SSL_CERT_FILE from environment variable, this allows us to
+-        # use an http proxy if we want to.
+-        ca_certs = os.environ.get(SSL_CERT_FILE, None)
+-        client_type_metadata = self._client_type_metadata
+-        sentry_sdk.init(
+-            dsn=DSN,
+-            before_send=UsageReporting._sanitize_event,
+-            release=f"{client_type_metadata.type}-{client_type_metadata.version}",
+-            server_name=False,           # Don't send the computer name
+-            default_integrations=False,  # We want to be explicit about the integrations we use
+-            integrations=[
+-                DedupeIntegration(),     # Yes we want to avoid event duplication
+-                StdlibIntegration(),     # Yes we want info from the standard lib objects
+-                ModulesIntegration()     # Yes we want to know what python modules are installed
+-            ],
+-            ca_certs=ca_certs
+-        )
+-
+-        # Store the user id so we don't have to calculate it again.
+-        self._user_id = self._get_user_id()
+-
+-        # Store _capture_exception as a member, so it's easier to test.
+-        self._capture_exception = sentry_sdk.capture_exception
+-
+-        return True
+diff --git a/setup.py b/setup.py
+index f8625f4..602840b 100644
+--- a/setup.py
++++ b/setup.py
+@@ -14,7 +14,7 @@ setup(
+     author_email="opensource@proton.me",
+     url="https://github.com/ProtonVPN/python-proton-vpn-api-core",
+     install_requires=[
+-        "proton-core", "distro", "sentry-sdk",
++        "proton-core", "distro",
+         "cryptography", "PyNaCl", "distro", "proton-vpn-lib", "fido2"
+     ],
+     extras_require={
+diff --git a/tests/core/test_connection.py b/tests/core/test_connection.py
+index e73a700..846feaa 100644
+--- a/tests/core/test_connection.py
++++ b/tests/core/test_connection.py
+@@ -45,7 +45,6 @@ def test_get_vpn_server_returns_vpn_server_built_from_logical_server_and_client_
+     vpn_connector_wrapper = VPNConnector(
+       session_holder=None,
+       settings_persistence=None,
+-      usage_reporting=None
+     )
+ 
+     logical_server = LogicalServer(data=LOGICAL_SERVER_DATA)
+@@ -66,65 +65,6 @@ def test_get_vpn_server_returns_vpn_server_built_from_logical_server_and_client_
+     assert vpn_server.label == physical_server.label
+ 
+ 
+-@pytest.mark.asyncio
+-async def test__on_connection_event_swallows_and_does_not_report_policy_errors():
+-    vpn_connector_wrapper = VPNConnector(
+-      session_holder=None,
+-      settings_persistence=None,
+-      usage_reporting=Mock(),
+-      state=states.Connected(),
+-    )
+-
+-    event = events.Disconnected()
+-    event.context.error = exceptions.FeaturePolicyError("Policy error")
+-
+-    await vpn_connector_wrapper._on_connection_event(event)
+-
+-    vpn_connector_wrapper._usage_reporting.report_error.assert_not_called()
+-
+-
+-@pytest.mark.asyncio
+-@pytest.mark.parametrize("error", [
+-    exceptions.FeatureError("generic feature error"),
+-    exceptions.FeatureSyntaxError("Feature syntax error")
+-])
+-async def test__on_connection_event_reports_feature_syntax_errors_but_no_other_feature_error(error):
+-    vpn_connector_wrapper = VPNConnector(
+-        session_holder=None,
+-        settings_persistence=None,
+-        usage_reporting=Mock(),
+-        state=states.Connected(),
+-    )
+-
+-    event = events.Disconnected()
+-    event.context.error = error
+-
+-    await vpn_connector_wrapper._on_connection_event(event)
+-    if isinstance(error, exceptions.FeatureSyntaxError):
+-        vpn_connector_wrapper._usage_reporting.report_error.assert_called_once_with(event.context.error)
+-    elif isinstance(error, exceptions.FeatureError):
+-        vpn_connector_wrapper._usage_reporting.report_error.assert_not_called()
+-    else:
+-        raise ValueError(f"Unexpected test parameter: {error}")
+-
+-@pytest.mark.asyncio
+-async def test__on_connection_event_reports_unexpected_exceptions_and_bubbles_them_up():
+-    vpn_connector_wrapper = VPNConnector(
+-        session_holder=None,
+-        settings_persistence=None,
+-        usage_reporting=Mock(),
+-        state=states.Connected(),
+-    )
+-
+-    event = events.Disconnected()
+-    event.context.error = Exception("Unexpected error")
+-
+-    with pytest.raises(Exception):
+-        await vpn_connector_wrapper._on_connection_event(event)
+-
+-    vpn_connector_wrapper._usage_reporting.report_error.assert_called_once_with(event.context.error)
+-
+-
+ def test_on_state_change_stores_new_device_ip_when_successfully_connected_to_vpn_and_connection_details_and_device_ip_are_set():
+     publisher_mock = Mock()
+     session_holder_mock = Mock()
+@@ -137,7 +77,6 @@ def test_on_state_change_stores_new_device_ip_when_successfully_connected_to_vpn
+     _ = VPNConnector(
+         session_holder=session_holder_mock,
+         settings_persistence=None,
+-        usage_reporting=None,
+         connection_persistence=Mock(),
+         publisher=publisher_mock,
+         port_forward_file_handler=Mock()
+@@ -174,7 +113,6 @@ def test_on_state_change_notifies_port_forwarding_file_handler_with_new_state():
+     _ = VPNConnector(
+         session_holder=session_holder_mock,
+         settings_persistence=None,
+-        usage_reporting=None,
+         connection_persistence=Mock(),
+         publisher=publisher_mock,
+         port_forward_file_handler=port_forwarding_file_handler_mock
+@@ -200,7 +138,6 @@ def test_on_state_change_skip_store_new_device_ip_when_successfully_connected_to
+     _ = VPNConnector(
+         session_holder=session_holder_mock,
+         settings_persistence=None,
+-        usage_reporting=None,
+         connection_persistence=Mock(),
+         publisher=publisher_mock
+     )
+@@ -232,7 +169,6 @@ def test_on_state_change_skip_store_new_device_ip_when_successfully_connected_to
+     _ = VPNConnector(
+         session_holder=session_holder_mock,
+         settings_persistence=None,
+-        usage_reporting=None,
+         connection_persistence=Mock(),
+         publisher=publisher_mock
+     )
+@@ -269,7 +205,6 @@ async def test_connector_updates_connection_credentials_when_certificate_is_refr
+     connector = VPNConnector(
+         session_holder=session_holder,
+         settings_persistence=Mock(),
+-        usage_reporting=Mock(),
+         connection_persistence=Mock(),
+         state=current_state
+     )
+diff --git a/tests/core/test_settings.py b/tests/core/test_settings.py
+index c4282a8..c7ffba2 100644
+--- a/tests/core/test_settings.py
++++ b/tests/core/test_settings.py
+@@ -37,7 +37,6 @@ def default_free_settings_dict():
+             "ip_list": []
+         },
+         "ipv6": True,
+-        "anonymous_crash_reports": True,
+         "features": {
+             "netshield": NetShield.NO_BLOCK.value,
+             "moderate_nat": False,
+diff --git a/tests/core/test_usage.py b/tests/core/test_usage.py
+deleted file mode 100644
+index 2e040cc..0000000
+--- a/tests/core/test_usage.py
++++ /dev/null
+@@ -1,171 +0,0 @@
+-"""
+-Copyright (c) 2023 Proton AG
+-
+-This file is part of Proton VPN.
+-
+-Proton VPN is free software: you can redistribute it and/or modify
+-it under the terms of the GNU General Public License as published by
+-the Free Software Foundation, either version 3 of the License, or
+-(at your option) any later version.
+-
+-Proton VPN is distributed in the hope that it will be useful,
+-but WITHOUT ANY WARRANTY; without even the implied warranty of
+-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-GNU General Public License for more details.
+-
+-You should have received a copy of the GNU General Public License
+-along with ProtonVPN.  If not, see <https://www.gnu.org/licenses/>.
+-"""
+-import copy
+-import os
+-import pytest
+-from types import SimpleNamespace
+-import tempfile
+-import json
+-
+-from proton.vpn.core.session_holder import ClientTypeMetadata
+-from proton.vpn.core.usage import UsageReporting
+-
+-SECRET_FILE = "secret.txt"
+-SECRET_PATH = os.path.join("/home/wozniak/5nkfiudfmk/.cache", SECRET_FILE)
+-MACHINE_ID = "bg77t2rmpjhgt9zim5gkz4t78jfur39f"
+-SENTRY_USER_ID = "70cf75689cecae78ec588316320d76477c71031f7fd172dd5577ac95934d4499"
+-USERNAME = "tester"
+-EMAIL = "toby.tubface@bucketworld.com"
+-GPG_KEY_ID = "D212342HE93E32P8"
+-
+-EVENT_WITH_USERNAME = {
+-    "frames": [
+-        {
+-            "filename": "/home/tester/src/quick_connect_widget.py",
+-            "abs_path": "/home/tester/src/quick_connect_widget.py",
+-            "function": "_on_disconnect_button_clicked",
+-            "module": "proton.vpn.app.gtk.widgets.vpn.quick_connect_widget",
+-            "lineno": 102,
+-            "pre_context": [
+-                "        future = self._controller.connect_to_fastest_server()",
+-                "        future.add_done_callback(lambda f: GLib.idle_add(f.result))  # bubble up exceptions if any.",
+-                "",
+-                "    def _on_disconnect_button_clicked(self, _):",
+-                "        logger.info(\"Disconnect from VPN\", category=\"ui\", event=\"disconnect\")"
+-            ],
+-            "context_line": "        future = self._controller.disconnect()",
+-            "post_context": [
+-                "        future.add_done_callback(lambda f: GLib.idle_add(f.result))  # bubble up exceptions if any."
+-            ],
+-            "vars": {
+-                "self": "<quick_connect_widget.... (proton+... at 0x601b5e322d90)>",
+-                "_": "<Gtk.Button object at 0x7f83d4aa8140 (GtkButton at 0x601b5e37ea40)>"
+-            },
+-            "in_app": True
+-        },
+-        {
+-            "filename": "/home/tester/src/ProtonVPN/linux/proton-vpn-gtk-app/proton/vpn/app/gtk/controller.py",
+-            "abs_path": "/home/tester/src/ProtonVPN/linux/proton-vpn-gtk-app/proton/vpn/app/gtk/controller.py",
+-            "function": "disconnect",
+-            "module": "proton.vpn.app.gtk.controller",
+-            "lineno": 224,
+-            "pre_context": [
+-                "        :return: A Future object that resolves once the connection reaches the",
+-                "        \"disconnected\" state.",
+-                "        \"\"\"",
+-                "        error = FileNotFoundError(\"This method is not implemented\")",
+-                "        error.filename = \"/home/wozniak/randomfile.py\""
+-            ],
+-            "context_line": "        raise error",
+-            "post_context": [
+-                "",
+-                "        return self.executor.submit(self._connector.disconnect)",
+-                "",
+-                "    @property",
+-                "    def account_name(self) -> str:"
+-            ],
+-            "vars": {
+-                "self": "<proton.vpn.app.gtk.controller.Controller object at 0x7f83e1856da0>",
+-                "error": "FileNotFoundError('This method is not implemented')"
+-            },
+-            "in_app": True
+-        }
+-    ]
+-}
+-
+-EVENT_WITH_GPG_ID = {
+-    "exception": {
+-        "values": [
+-            {
+-                "type": "DBusErrorResponse",
+-                "value": "[me.grimsteel.PassSecretService.GPGError] ('gpg: encrypted with cv25519 key, ID D212342HE93E32P8, created 2025-02-03\\n      \"Toby (pass & proton) <toby.tubface@bucketworld.com>\"\\ngpg: [don\\'t know]: invalid packet (ctb=6c)\\ngpg: packet(5) with unknown version 18\\n',)",
+-            }
+-        ]
+-    }
+-}
+-
+-EVENT_WITH_EMAIL = {
+-    "exception": {
+-        "values": [
+-            {
+-                "type": "DBusErrorResponse",
+-                "value": "Some error that includes an email address: toby.tubface@bucketworld.com',)",
+-            }
+-        ]
+-    }
+-}
+-
+-@pytest.mark.parametrize("enabled", [True, False])
+-def test_usage_report_enabled(enabled):
+-    report_error = SimpleNamespace(invoked=False)
+-
+-    usage_reporting = UsageReporting(ClientTypeMetadata("test_usage.py", "none"))
+-
+-    def capture_exception(error):
+-        report_error.invoked = True
+-
+-    usage_reporting.enabled = enabled
+-    usage_reporting._capture_exception = capture_exception
+-
+-    EMPTY_ERROR = None
+-    usage_reporting.report_error(EMPTY_ERROR)
+-
+-    assert report_error.invoked == enabled, "UsageReporting enable state does not match the error reporting"
+-
+-
+-def test_userid_calaculation():
+-    with tempfile.NamedTemporaryFile() as file:
+-        file.write(MACHINE_ID.encode('utf-8'))
+-        file.seek(0)
+-
+-        assert UsageReporting._get_user_id(
+-            machine_id_filepath=file.name,
+-            user_name=USERNAME) == SENTRY_USER_ID, "Error hashing does not match the expected value"
+-
+-
+-def test_sanitize_event_for_username():
+-
+-    event = copy.deepcopy(EVENT_WITH_USERNAME)
+-
+-    UsageReporting._sanitize_event(event, None, USERNAME)
+-
+-    assert USERNAME in json.dumps(EVENT_WITH_USERNAME), "Username should be in the event"
+-    assert USERNAME not in json.dumps(event), "Username should not be in the event"
+-
+-
+-def test_sanitize_event_for_email():
+-
+-    event = copy.deepcopy(EVENT_WITH_EMAIL)
+-
+-    UsageReporting._sanitize_event(event, None, USERNAME)
+-
+-    assert EMAIL in json.dumps(EVENT_WITH_EMAIL), "Email should be in the event"
+-    assert EMAIL not in json.dumps(event), "Email should not be in the event"
+-
+-
+-def test_sanitize_event_for_gpg_id():
+-
+-    event = copy.deepcopy(EVENT_WITH_GPG_ID)
+-
+-    UsageReporting._sanitize_event(event, None, USERNAME)
+-
+-    assert GPG_KEY_ID in json.dumps(EVENT_WITH_GPG_ID), "GPG ID should be in the event"
+-    assert GPG_KEY_ID not in json.dumps(event), "GPG ID should not be in the event"
+-
+-
+-- 
+2.49.1
+
